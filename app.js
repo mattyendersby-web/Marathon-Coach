@@ -28,6 +28,7 @@ function defaultState(){
     chat: [],        // [{role, content, ts}]
     mealIdeas: {},   // { 'YYYY-MM-DD': text } AI meal suggestions cache
     foodLog: {},     // { 'YYYY-MM-DD': [{barcode, name, grams, kcal, protein, carbs, fat, loggedAt}] }
+    lastBackupAt: null,
     races: [{
       id: 'r1', name: 'New York City Marathon', date: '2026-11-01',
       goalHours: 4, goalMinutes: 30,
@@ -57,7 +58,8 @@ function loadState(){
       races: (parsed.races && parsed.races.length) ? parsed.races : d.races,
       activeRaceId: parsed.activeRaceId || d.activeRaceId,
       mealIdeas: parsed.mealIdeas || {},
-      foodLog: parsed.foodLog || {}
+      foodLog: parsed.foodLog || {},
+      lastBackupAt: parsed.lastBackupAt || null
     };
   }catch(e){
     console.error('Failed to load state, starting fresh', e);
@@ -684,7 +686,11 @@ function weekMileageSummary(weekStartDate){
     const sess = ov || d.session;
     const miles = sessionTotalMiles(sess);
     totalPlanned += miles;
-    if(state.log[d.dateKey] && state.log[d.dateKey].done) completed += miles;
+    const log = state.log[d.dateKey];
+    if(log && log.done){
+      const actual = (log.source === 'photo' && log.actualMiles != null) ? log.actualMiles : miles;
+      completed += actual;
+    }
   });
   return { totalPlanned, completed, remaining: Math.max(totalPlanned-completed,0) };
 }
@@ -985,6 +991,11 @@ function renderToday(){
     <h1 class="page-title">Today${eff && eff.phase ? ` · ${eff.phase}` : ''}</h1>
     <p class="page-sub">${monthDayLabel(new Date())} — ${shift !== 'unknown' ? shiftLabelWithHours(shift) : 'Shift not set for today'}</p>
 
+    ${backupIsStale() ? `<div class="key-warning" style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+      <span>${state.lastBackupAt ? "It's been a week since your last backup." : "You haven't backed up your data yet."} Everything lives only on this phone.</span>
+      <button class="ghost" style="padding:7px 12px; font-size:12px; flex-shrink:0;" onclick="exportData()">Back up now</button>
+    </div>` : ''}
+
     <div class="week-strip">${weekStripHtml}</div>
 
     <div class="card accent">
@@ -1005,7 +1016,9 @@ function renderToday(){
         <button onclick="toggleDone('${key}')" class="${done?'ghost':''}">${done ? '✓ Marked done' : 'Mark as done'}</button>
         <button class="ghost" onclick="openOverride('${key}')">Swap session</button>
         <button class="ghost" onclick="toggleBreakdown()">${window._todayBreakdownOpen ? 'Hide' : 'View'} full breakdown</button>
+        <button class="ghost" onclick="triggerRunPhotoUpload('${key}')" ${window._runPhotoLoading===key?'disabled':''}>${window._runPhotoLoading===key ? 'Reading photo...' : '📷 Log with photo'}</button>
       </div>
+      ${renderLoggedRunLine(key)}
     </div>
 
     ${renderWeekMileageCard()}
@@ -1064,6 +1077,144 @@ function toggleDone(key){
 function toggleBreakdown(){
   window._todayBreakdownOpen = !window._todayBreakdownOpen;
   render();
+}
+
+/* ============ LOG RUN FROM PHOTO (Strava/Garmin screenshot) ============ */
+function fileToDataUrl(file){
+  return new Promise((resolve, reject)=>{
+    const r = new FileReader();
+    r.onload = ()=>resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+function triggerRunPhotoUpload(dateKey){
+  window._runPhotoTargetDate = dateKey;
+  document.getElementById('runPhotoInput').click();
+}
+async function onRunPhotoChosen(e){
+  const file = e.target.files[0];
+  const dateKey = window._runPhotoTargetDate;
+  e.target.value = ''; // allow re-selecting the same file later
+  if(!file || !dateKey) return;
+  if(!state.settings.apiKey){
+    alert('Add your Anthropic API key in Settings first — reading run photos uses the same coach connection.');
+    return;
+  }
+  window._runPhotoLoading = dateKey;
+  render();
+  try{
+    const dataUrl = await fileToDataUrl(file);
+    const base64 = dataUrl.split(',')[1];
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': state.settings.apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 300,
+        system: "You extract structured running data from a screenshot of a Strava or Garmin activity summary. Respond with ONLY a JSON object and absolutely nothing else — no explanation, no preamble, no markdown code fences, just raw JSON starting with { and ending with }. Fields: distance_miles (number, convert from km if the screenshot shows km), duration_minutes (number), avg_pace_min_per_mile (number or null), avg_heart_rate (number or null, if visible). If a field isn't visible in the image, use null for it.",
+        messages: [{ role:'user', content:[
+          { type:'image', source:{ type:'base64', media_type:file.type, data:base64 } },
+          { type:'text', text:'Extract the run data from this screenshot.' }
+        ]}]
+      })
+    });
+    const data = await resp.json();
+    if(data.error) throw new Error(data.error.message || 'API error');
+    const textBlock = (data.content||[]).find(b=>b.type==='text');
+    if(!textBlock || !textBlock.text) throw new Error('No response text from API');
+
+    let parsed;
+    const cleaned = textBlock.text.replace(/```json|```/g,'').trim();
+    try{
+      parsed = JSON.parse(cleaned);
+    }catch(parseErr){
+      const match = cleaned.match(/\{[\s\S]*\}/);
+      if(!match) throw new Error('Could not find JSON in response: ' + cleaned.slice(0,120));
+      parsed = JSON.parse(match[0]);
+    }
+
+    if(!state.log[dateKey]) state.log[dateKey] = {};
+    state.log[dateKey].done = true;
+    state.log[dateKey].actualMiles = parsed.distance_miles ?? null;
+    state.log[dateKey].actualMinutes = parsed.duration_minutes ?? null;
+    state.log[dateKey].actualPace = parsed.avg_pace_min_per_mile ?? null;
+    state.log[dateKey].actualHR = parsed.avg_heart_rate ?? null;
+    state.log[dateKey].source = 'photo';
+    state.log[dateKey].coachFeedback = null;
+    saveState();
+    showToast('Run logged from photo');
+    window._runPhotoLoading = null;
+    render();
+    fetchRunPhotoCoachFeedback(dateKey); // auto-review, shown inline once ready
+    return;
+  }catch(err){
+    console.error('Run photo logging failed:', err);
+    showToast(`Couldn't read that photo (${err.message || 'unknown error'}) — try the Coach tab instead`);
+  }
+  window._runPhotoLoading = null;
+  render();
+}
+async function fetchRunPhotoCoachFeedback(dateKey){
+  window._runFeedbackLoading = dateKey;
+  render();
+  const log = state.log[dateKey] || {};
+  const eff = getEffectiveSession(dateKey);
+  const plannedDesc = eff ? convertDistanceWording(eff.session.desc) : 'no session generated';
+  const plannedMiles = eff ? sessionTotalMiles(eff.session) : 0;
+  const prompt = `The athlete just logged an actual run for ${dateKey}: ${log.actualMiles ?? '?'}mi in ${log.actualMinutes ?? '?'} min${log.actualPace ? ` (avg pace ${fmtPace(log.actualPace)})` : ''}${log.actualHR ? `, avg HR ${log.actualHR}bpm` : ''}. The plan called for: ${plannedDesc} (${plannedMiles}mi planned). Give a brief coach review (2-4 sentences): how did this compare to plan, anything worth flagging (too fast/slow, distance short/long, HR unusually high), and one quick forward-looking note if relevant. Use the actual numbers. No disclaimers or generic filler.`;
+  try{
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': state.settings.apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({ model:'claude-sonnet-4-6', max_tokens:300, system: buildCoachSystemPrompt(), messages:[{role:'user', content: prompt}] })
+    });
+    const data = await resp.json();
+    const textBlock = (data.content||[]).find(b=>b.type==='text');
+    if(textBlock){
+      state.log[dateKey].coachFeedback = textBlock.text;
+      state.chat.push({role:'assistant', content: textBlock.text, ts:Date.now()});
+      saveState();
+      speakText(textBlock.text);
+    }
+  }catch(e){ /* non-critical, fail silently */ }
+  window._runFeedbackLoading = null;
+  render();
+}
+function renderLoggedRunLine(dateKey){
+  const log = state.log[dateKey];
+  if(!log || log.source !== 'photo' || log.actualMiles == null) return '';
+  const paceText = log.actualPace ? ` at ${fmtPace(log.actualPace)}` : '';
+  const hrText = log.actualHR ? ` · avg HR ${log.actualHR}bpm` : '';
+  const feedbackLoading = window._runFeedbackLoading === dateKey;
+  return `
+    <div style="margin-top:10px; padding:10px 12px; background:var(--ink-field); border-radius:var(--radius-sm); font-size:13px; font-family:'Helvetica Neue',Arial,sans-serif;">
+      Logged from photo: ${formatDistance(log.actualMiles)}${log.actualMinutes?` in ${log.actualMinutes} min`:''}${paceText}${hrText}
+      ${feedbackLoading ? `<div style="margin-top:8px; color:var(--lane-dim);">Coach is reviewing this run...</div>` : ''}
+      ${log.coachFeedback ? `<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--hairline);"><div style="font-size:11px; color:var(--gold); font-weight:600; margin-bottom:4px;">Coach's take</div><div style="font-size:13.5px; line-height:1.55; color:var(--chalk);">${escapeHtml(log.coachFeedback)}</div></div>` : ''}
+      <button class="ghost" style="display:block; margin-top:10px; padding:6px 10px; font-size:12px;" onclick="discussRunWithCoach('${dateKey}')">Discuss further with coach</button>
+    </div>`;
+}
+function discussRunWithCoach(dateKey){
+  const log = state.log[dateKey] || {};
+  let msg = `I just logged my run for ${dateKey}: `;
+  if(log.actualMiles != null) msg += `${log.actualMiles}mi`;
+  if(log.actualMinutes != null) msg += ` in ${log.actualMinutes} min`;
+  if(log.actualPace != null) msg += ` (avg pace ${fmtPace(log.actualPace)})`;
+  if(log.actualHR != null) msg += `, avg HR ${log.actualHR}bpm`;
+  msg += `. How did that go relative to plan?`;
+  window._prefillChatMessage = msg;
+  setView('coach');
 }
 
 document.addEventListener('click', (e)=>{
@@ -1181,7 +1332,9 @@ function renderDayDetail(dateKey){
         <button onclick="toggleDone('${dateKey}')" class="${done?'ghost':''}">${done ? '✓ Marked done' : 'Mark as done'}</button>
         <button class="ghost" onclick="openOverride('${dateKey}')">Swap session</button>
         <button class="ghost" onclick="toggleDayDetailBreakdown()">${window._dayDetailBreakdownOpen ? 'Hide' : 'View'} full breakdown</button>
+        <button class="ghost" onclick="triggerRunPhotoUpload('${dateKey}')" ${window._runPhotoLoading===dateKey?'disabled':''}>${window._runPhotoLoading===dateKey ? 'Reading photo...' : '📷 Log with photo'}</button>
       </div>
+      ${renderLoggedRunLine(dateKey)}
     </div>
 
     ${window._dayDetailBreakdownOpen ? `
@@ -1279,6 +1432,8 @@ function renderPlan(){
       ${rows}
     </div>
 
+    ${renderMileageProgressionCard()}
+
     <div class="card">
       <h3>About this plan</h3>
       <p style="font-size:13px; color:var(--lane-dim); font-family:'Helvetica Neue',Arial,sans-serif; line-height:1.6; margin:0;">
@@ -1286,6 +1441,54 @@ function renderPlan(){
       </p>
     </div>
   `;
+}
+function renderMileageProgressionCard(){
+  const todayWs = startOfWeek(new Date());
+  const n = Math.max(weeksToRace(getActiveRace()), 0);
+  const capped = Math.min(n, 12); // sane upper bound if race date is far out
+  const rows = [];
+  for(let i=0; i<=capped; i++){
+    const ws = addDays(todayWs, i*7);
+    const week = buildWeekSchedule(ws);
+    let planned = 0, completed = 0;
+    week.forEach(d=>{
+      const ov = state.overrides[d.dateKey];
+      const sess = ov || d.session;
+      const miles = sessionTotalMiles(sess);
+      planned += miles;
+      if(i===0){
+        const log = state.log[d.dateKey];
+        if(log && log.done){
+          completed += (log.source === 'photo' && log.actualMiles != null) ? log.actualMiles : miles;
+        }
+      }
+    });
+    rows.push({ ws, phase: week[0].phase, weeksOut: week[0].weeksOut, planned: Math.round(planned*10)/10, completed: Math.round(completed*10)/10, isCurrent: i===0 });
+  }
+  const maxPlanned = Math.max(...rows.map(r=>r.planned), 1);
+
+  return `
+    <div class="card">
+      <h3>Mileage by week</h3>
+      <p style="font-size:12px; color:var(--lane-dim); font-family:'Helvetica Neue',Arial,sans-serif; margin:0 0 16px;">
+        Planned volume from now through race week — shows the build, peak, and taper at a glance. This week's bar also fills in green as you complete sessions.
+      </p>
+      ${rows.map(r=>{
+        const plannedPct = Math.round((r.planned/maxPlanned)*100);
+        const donePct = Math.round((r.completed/maxPlanned)*100);
+        return `
+        <div style="margin-bottom:13px;">
+          <div style="display:flex; justify-content:space-between; font-size:12px; font-family:'Helvetica Neue',Arial,sans-serif; margin-bottom:5px;">
+            <span style="color:${r.isCurrent?'var(--brass)':'var(--lane-dim)'}; font-weight:${r.isCurrent?'700':'400'};">${monthDayLabel(r.ws)}${r.weeksOut<=0?' · Race week':''}${r.isCurrent?' · This week':''}</span>
+            <span style="color:var(--lane-dim);">${r.phase} · ${formatDistance(r.planned)}</span>
+          </div>
+          <div style="height:10px; background:var(--ink-field); border-radius:4px; position:relative; overflow:hidden;">
+            <div style="position:absolute; inset:0; width:${plannedPct}%; background:rgba(58,160,255,0.3); border-radius:4px;"></div>
+            ${r.isCurrent && r.completed>0 ? `<div style="position:absolute; inset:0; width:${donePct}%; background:#22c55e; border-radius:4px;"></div>` : ''}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`;
 }
 function shiftPlanWeek(n){
   window._planWeekOffset = (window._planWeekOffset||0) + n;
@@ -2037,15 +2240,16 @@ function renderSettings(){
 
     <button class="block" onclick="saveSettings()">Save settings</button>
 
-    <div class="card" style="margin-top:20px;">
-      <h3>Data</h3>
-      <p style="font-size:13px; color:var(--lane-dim); font-family:'Helvetica Neue',Arial,sans-serif; margin: 0 0 12px;">
-        Everything is stored in this browser only. Export a backup before clearing browser data or switching devices.
+    <div class="card accent" style="margin-top:20px;">
+      <h3>Backup</h3>
+      <p style="font-size:13px; color:var(--lane-dim); font-family:'Helvetica Neue',Arial,sans-serif; margin: 0 0 4px;">
+        Everything — your training log, coach chats, shifts, food log — lives only in this browser. If you clear browser data or switch phones without backing up, it's gone for good.
       </p>
-      <div class="row">
-        <button class="ghost" onclick="exportData()">Export backup</button>
-        <button class="ghost" onclick="document.getElementById('importFile').click()">Import backup</button>
-      </div>
+      <p style="font-size:12px; color:${backupIsStale() ? '#ff8a80' : 'var(--good)'}; font-family:'Helvetica Neue',Arial,sans-serif; margin: 8px 0 14px;">
+        ${state.lastBackupAt ? `Last backed up ${timeAgo(state.lastBackupAt)}` : "You haven't backed up yet"}
+      </p>
+      <button class="block" onclick="exportData()">Back up now</button>
+      <button class="ghost block" style="margin-top:10px;" onclick="document.getElementById('importFile').click()">Restore from backup</button>
       <input type="file" id="importFile" accept="application/json" style="display:none;">
     </div>
   `;
@@ -2165,6 +2369,30 @@ function exportData(){
   a.href = url; a.download = `split-coach-backup-${todayKey()}.json`;
   a.click();
   URL.revokeObjectURL(url);
+  state.lastBackupAt = Date.now();
+  saveState();
+  showToast('Backup saved — check your Downloads');
+  render();
+}
+function timeAgo(ts){
+  if(!ts) return null;
+  const diffMs = Date.now() - ts;
+  const mins = Math.floor(diffMs/60000);
+  if(mins < 1) return 'just now';
+  if(mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins/60);
+  if(hrs < 24) return `${hrs} hour${hrs===1?'':'s'} ago`;
+  const days = Math.floor(hrs/24);
+  if(days === 1) return 'yesterday';
+  if(days < 30) return `${days} days ago`;
+  const months = Math.floor(days/30);
+  return `${months} month${months===1?'':'s'} ago`;
+}
+function backupIsStale(){
+  const hasData = state.chat.length > 0 || Object.keys(state.log).length > 0 || Object.keys(state.shifts).length > 0;
+  if(!hasData) return false;
+  if(!state.lastBackupAt) return true;
+  return (Date.now() - state.lastBackupAt) > 7*24*60*60*1000;
 }
 document.addEventListener('change', (e)=>{
   if(e.target.id === 'importFile'){
@@ -2211,6 +2439,11 @@ function attachViewHandlers(){
       const bottomOffset = window.innerHeight - navEl.getBoundingClientRect().top;
       coachEl.style.top = topOffset + 'px';
       coachEl.style.bottom = bottomOffset + 'px';
+    }
+    if(window._prefillChatMessage){
+      const input = document.getElementById('chatInput');
+      if(input){ input.value = window._prefillChatMessage; input.focus(); }
+      window._prefillChatMessage = null;
     }
   }
 }
