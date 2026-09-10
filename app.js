@@ -245,20 +245,40 @@ function hrZones(){
 }
 
 /* ============ SHIFT HELPERS ============ */
-const SHIFT_COLORS = { off:'#22c55e', day:'#3aa0ff', evening:'#ff4d4d', night:'#a855f7', unknown:'#5a6478' };
+// Whole-box background colors for each shift type (used on calendar/strip cells)
+const SHIFT_CELL_COLORS = { off:'#3aa0ff', day:'#22c55e', evening:'#a855f7', night:'#eab308', unknown:null };
+const SHIFT_CELL_TEXT = { off:'#ffffff', day:'#ffffff', evening:'#ffffff', night:'#1a1408', unknown:null };
+const SHIFT_COLORS = SHIFT_CELL_COLORS; // legacy alias (legend swatches, etc.)
 const SESSION_DOT_COLORS = { long:'#ff4d4d', quality:'#3aa0ff', easy:'#22c55e', cross:'#3aa0ff', rest:'#5a6478', race:'#ff4d4d' };
-function dayDots(dateKey){
+
+// Inline style string for a cell's background, based on its shift. Empty string if shift not set.
+function shiftCellStyle(dateKey){
   const shift = getShift(dateKey);
+  const bg = SHIFT_CELL_COLORS[shift];
+  if(!bg) return '';
+  return `background:${bg}; border-color:${bg};`;
+}
+function shiftCellTextStyle(dateKey){
+  const shift = getShift(dateKey);
+  const c = SHIFT_CELL_TEXT[shift];
+  return c ? `color:${c};` : '';
+}
+// Small dots for session type + strength only (shift is now conveyed by the box color itself)
+function sessionDots(dateKey){
   const eff = getEffectiveSession(dateKey);
-  const dots = [`<div class="mini-dot" style="background:${SHIFT_COLORS[shift]}" title="Shift: ${SHIFT_LABELS[shift]}"></div>`];
+  const dots = [];
   if(eff && eff.session){
     const c = SESSION_DOT_COLORS[eff.session.badge] || SESSION_DOT_COLORS.rest;
     dots.push(`<div class="mini-dot" style="background:${c}" title="Session"></div>`);
     if(eff.session.strength){
-      dots.push(`<div class="mini-dot" style="background:#a855f7" title="Strength"></div>`);
+      dots.push(`<div class="mini-dot" style="background:#e6d5ff" title="Strength"></div>`);
     }
   }
-  return `<div class="dot-row">${dots.join('')}</div>`;
+  return dots.length ? `<div class="dot-row">${dots.join('')}</div>` : '';
+}
+// Small checkmark badge shown on a cell once that day's session is marked done
+function doneBadge(dateKey){
+  return isDayDone(dateKey) ? `<div class="done-badge">✓</div>` : '';
 }
 function isDayDone(dateKey){ return !!(state.log[dateKey] && state.log[dateKey].done); }
 function shiftLabelWithHours(shiftType){
@@ -662,7 +682,7 @@ function weekMileageSummary(weekStartDate){
   week.forEach(d=>{
     const ov = state.overrides[d.dateKey];
     const sess = ov || d.session;
-    const miles = sess.miles || 0;
+    const miles = sessionTotalMiles(sess);
     totalPlanned += miles;
     if(state.log[d.dateKey] && state.log[d.dateKey].done) completed += miles;
   });
@@ -909,6 +929,14 @@ function render(){
   else if(currentView === 'shifts') section.innerHTML = renderShifts();
   else if(currentView === 'settings') section.innerHTML = renderSettings();
   main.appendChild(section);
+
+  if(currentView === 'coach'){
+    document.body.style.overflow = 'hidden';
+    window.scrollTo(0,0);
+  } else {
+    document.body.style.overflow = '';
+  }
+
   attachViewHandlers();
   updateHeader();
 }
@@ -945,11 +973,11 @@ function renderToday(){
   const weekStripHtml = stripDates.map(d=>{
     const dk = fmtDate(d);
     const isToday = dk === key;
-    const done = isDayDone(dk);
-    return `<div class="day-chip ${isToday?'today':''} ${done?'done-day':''}" data-goto-day="${dk}" ${isToday?'id="todayChip"':''}>
+    return `<div class="day-chip ${isToday?'today':''}" style="${shiftCellStyle(dk)}${shiftCellTextStyle(dk)}" data-goto-day="${dk}" ${isToday?'id="todayChip"':''}>
+      ${doneBadge(dk)}
       <div class="dow">${dowShort(d)}</div>
       <div class="num">${d.getDate()}</div>
-      ${dayDots(dk)}
+      ${sessionDots(dk)}
     </div>`;
   }).join('');
 
@@ -1452,9 +1480,9 @@ function renderShifts(){
     const date = new Date(y,m,d);
     const key = fmtDate(date);
     const isToday = key === todayKey();
-    const done = isDayDone(key);
-    cells += `<div class="month-cell ${isToday?'today':''} ${done?'done-day':''}" data-shift-cell="${key}">
-      ${d}${dayDots(key)}
+    cells += `<div class="month-cell ${isToday?'today':''}" style="${shiftCellStyle(key)}${shiftCellTextStyle(key)}" data-shift-cell="${key}">
+      ${doneBadge(key)}
+      ${d}${sessionDots(key)}
     </div>`;
   }
 
@@ -1463,11 +1491,11 @@ function renderShifts(){
     const date = new Date(y,m,d);
     const key = fmtDate(date);
     const isToday = key === todayKey();
-    const done = isDayDone(key);
-    strip.push(`<div class="day-chip ${isToday?'today':''} ${done?'done-day':''}" id="stripChip-${key}" onclick="openShiftPicker('${key}')">
+    strip.push(`<div class="day-chip ${isToday?'today':''}" style="${shiftCellStyle(key)}${shiftCellTextStyle(key)}" id="stripChip-${key}" onclick="openShiftPicker('${key}')">
+      ${doneBadge(key)}
       <div class="dow">${dowShort(date)}</div>
       <div class="num">${d}</div>
-      ${dayDots(key)}
+      ${sessionDots(key)}
     </div>`);
   }
   const stripHtml = strip.join('');
@@ -1483,7 +1511,7 @@ function renderShifts(){
     </div>
 
     <div class="shift-legend">
-      ${Object.keys(SHIFT_LABELS).map(k=>`<span><span class="dot" style="background:${SHIFT_COLORS[k]}"></span>${SHIFT_LABELS[k]}</span>`).join('')}
+      ${Object.keys(SHIFT_LABELS).map(k=>`<span><span class="dot" style="background:${SHIFT_CELL_COLORS[k] || 'transparent'}; border:1px solid var(--hairline-brass);"></span>${SHIFT_LABELS[k]}</span>`).join('')}
     </div>
 
     <div class="month-grid">
@@ -1642,31 +1670,28 @@ function renderCoach(){
   const voiceInputSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
   const voiceOutputSupported = 'speechSynthesis' in window;
   return `
-    <h1 class="page-title">Coach</h1>
-    <p class="page-sub">Talk through how training's going, adjust plans, or vent about a rough shift</p>
-    ${!hasKey ? `<div class="key-warning">Add your Anthropic API key in <button class="linklike" onclick="setView('settings')">Settings</button> to chat with your coach.</div>` : ''}
-    <div class="pill-row">
-      ${voiceInputSupported ? `<div class="pill" style="cursor:default;">🎤 Tap the mic to talk</div>` : ''}
-      ${voiceOutputSupported ? `<div class="pill ${state.settings.voiceReplies?'selected':''}" onclick="toggleVoiceReplies()">${state.settings.voiceReplies?'🔊':'🔇'} Voice replies</div>` : ''}
+    <div class="coach-fullpage" id="coachFullpage">
+      <div class="coach-topbar">
+        <h1>Coach</h1>
+        ${voiceOutputSupported ? `<button class="ghost" style="padding:6px 12px; font-size:12px;" onclick="toggleVoiceReplies()">${state.settings.voiceReplies?'🔊':'🔇'}</button>` : ''}
+      </div>
+      ${!hasKey ? `<div class="key-warning" style="margin-top:12px;">Add your Anthropic API key in <button class="linklike" onclick="setView('settings')">Settings</button> to chat with your coach.</div>` : ''}
+      <div class="chat-log-full" id="chatLog">
+        ${chatHtml || `<div class="empty">Say hello — tell your coach how today's shift went, how you're feeling, or attach a screenshot of a recent run.${voiceInputSupported ? ' Tap the mic to talk instead of typing.' : ''}</div>`}
+      </div>
+      ${pendingImage ? `<div style="display:flex; align-items:center; gap:10px; padding-bottom:8px; flex-shrink:0;">
+        <img src="${pendingImage.dataUrl}" style="height:56px; border-radius:4px; border:1px solid rgba(232,226,212,0.2);">
+        <span style="font-size:12px; color:var(--lane-dim); font-family:'Helvetica Neue',Arial,sans-serif;">Screenshot ready to send</span>
+        <button class="ghost" style="padding:6px 10px; font-size:12px;" onclick="clearPendingImage()">Remove</button>
+      </div>` : ''}
+      <div class="chat-input-row">
+        <button class="ghost" style="flex:0 0 auto; padding:11px 14px;" onclick="attachScreenshot()" ${!hasKey?'disabled':''} title="Attach screenshot">📷</button>
+        ${voiceInputSupported ? `<button class="ghost ${window._recognizing?'mic-active':''}" style="flex:0 0 auto; padding:11px 14px;" onclick="toggleVoiceInput()" ${!hasKey?'disabled':''} title="Voice input">${window._recognizing ? '⏹' : '🎤'}</button>` : ''}
+        <textarea id="chatInput" placeholder="${window._recognizing ? 'Listening...' : 'Message your coach...'}" ${!hasKey?'disabled':''}></textarea>
+        <button onclick="sendChat()" ${!hasKey?'disabled':''}>Send</button>
+      </div>
+      <input type="file" id="screenshotInput" accept="image/*" style="display:none" onchange="onScreenshotChosen(event)">
     </div>
-    <p style="font-size:12px; color:var(--lane-dim); font-family:'Helvetica Neue',Arial,sans-serif; margin: -8px 0 14px;">
-      Tip: tap 📷 to attach a screenshot — a Strava run, Garmin heart-rate/training data, or a race result. The coach reads it directly. Images aren't saved between sessions, just used for that message.
-    </p>
-    <div class="chat-log" id="chatLog">
-      ${chatHtml || `<div class="empty">Say hello — tell your coach how today's shift went, how you're feeling, or attach a screenshot of a recent run.</div>`}
-    </div>
-    ${pendingImage ? `<div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
-      <img src="${pendingImage.dataUrl}" style="height:56px; border-radius:4px; border:1px solid rgba(232,226,212,0.2);">
-      <span style="font-size:12px; color:var(--lane-dim); font-family:'Helvetica Neue',Arial,sans-serif;">Screenshot ready to send</span>
-      <button class="ghost" style="padding:6px 10px; font-size:12px;" onclick="clearPendingImage()">Remove</button>
-    </div>` : ''}
-    <div class="chat-input-row">
-      <button class="ghost" style="flex:0 0 auto; padding:11px 14px;" onclick="attachScreenshot()" ${!hasKey?'disabled':''} title="Attach screenshot">📷</button>
-      ${voiceInputSupported ? `<button class="ghost ${window._recognizing?'mic-active':''}" style="flex:0 0 auto; padding:11px 14px;" onclick="toggleVoiceInput()" ${!hasKey?'disabled':''} title="Voice input">${window._recognizing ? '⏹' : '🎤'}</button>` : ''}
-      <textarea id="chatInput" placeholder="${window._recognizing ? 'Listening...' : 'Message your coach...'}" ${!hasKey?'disabled':''}></textarea>
-      <button onclick="sendChat()" ${!hasKey?'disabled':''}>Send</button>
-    </div>
-    <input type="file" id="screenshotInput" accept="image/*" style="display:none" onchange="onScreenshotChosen(event)">
   `;
 }
 function toggleVoiceReplies(){
@@ -2175,6 +2200,18 @@ function attachViewHandlers(){
   if(currentView === 'shifts' && window._shiftStripAnchor){
     const anchorChip = document.getElementById('stripChip-' + window._shiftStripAnchor);
     if(anchorChip) anchorChip.scrollIntoView({ inline:'center', block:'nearest' });
+  }
+
+  if(currentView === 'coach'){
+    const coachEl = document.getElementById('coachFullpage');
+    const headerEl = document.querySelector('header.top');
+    const navEl = document.querySelector('nav.tabbar');
+    if(coachEl && headerEl && navEl){
+      const topOffset = headerEl.getBoundingClientRect().bottom;
+      const bottomOffset = window.innerHeight - navEl.getBoundingClientRect().top;
+      coachEl.style.top = topOffset + 'px';
+      coachEl.style.bottom = bottomOffset + 'px';
+    }
   }
 }
 
