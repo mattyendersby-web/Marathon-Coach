@@ -178,6 +178,63 @@ function trainingPaces(race){
     interval: base - 0.75
   };
 }
+
+/* ============ RACE-DAY PACING PLAN (NYC Marathon course) ============ */
+// adjust: minutes per mile slower(+) or faster(-) than goal average pace for that stretch,
+// based on the well-known character of the NYC course (bridges, boroughs, Central Park finish).
+const NYC_COURSE_SEGMENTS = [
+  { miles:'1-2',    label:'Verrazzano Bridge start',       note:"Steady climb then a downhill off the bridge. Hold back here — this is the single most common place runners go out too fast.", adjust: 0.15 },
+  { miles:'3-8',    label:'Brooklyn',                       note:'Flat and loud. Settle into goal pace once your legs feel warmed up, usually by mile 3-4.', adjust: 0 },
+  { miles:'9-13',   label:'Williamsburg → Greenpoint → Queens', note:'Still mostly flat. The halfway point comes up around the Pulaski Bridge.', adjust: 0 },
+  { miles:'15',     label:'Queensboro Bridge',              note:"A quiet, unsupported climb with no crowd noise — mentally tougher than it is physically hard. Don't chase pace here.", adjust: 0.25 },
+  { miles:'16',     label:'First Avenue',                   note:'A huge wall of crowd noise as you come off the bridge. Classic mistake: speeding up. Hold your number.', adjust: -0.05 },
+  { miles:'17-18',  label:'The Bronx (Willis Ave Bridge)',  note:'A short out-and-back, gently rolling. Good place to take in fuel.', adjust: 0.05 },
+  { miles:'20-21',  label:'Back into Manhattan (Madison Ave Bridge)', note:"This is where the wall shows up for a lot of runners. Fuel early — don't wait until you feel it.", adjust: 0.15 },
+  { miles:'22-24',  label:'Fifth Avenue',                   note:'A long, grinding gradual uphill. Effort will feel harder than the pace suggests here — that\'s normal.', adjust: 0.2 },
+  { miles:'25-26.2',label:'Central Park finish',            note:'Rolling hills to the line. Empty the tank — this is the last climb before you finish.', adjust: 0.1 }
+];
+function renderRacePlanCard(){
+  const race = getActiveRace();
+  const goalPace = goalPaceMinPerMile(race) || predictedPaceMinPerMile(race);
+  if(!goalPace) return '';
+  const goalMin = goalTotalMinutes(race);
+  const predicted = predictedMarathonMinutes(race);
+  const targetLabel = goalMin ? fmtMinutesAsHM(goalMin) : (predicted ? `~${fmtMinutesAsHM(predicted)}` : '—');
+  const isNYC = /new york/i.test(race.name);
+
+  if(!isNYC){
+    return `
+      <div class="card accent">
+        <h3>Race plan — ${race.name}</h3>
+        <p style="font-size:13px; color:var(--lane-dim); font-family:'Helvetica Neue',Arial,sans-serif; margin:0;">
+          Target finish <strong style="color:var(--chalk);">${targetLabel}</strong> at an average pace of <strong style="color:var(--gold);">${fmtPace(goalPace)}</strong>. Course-specific pacing notes are only built in for the New York City Marathon right now — ask the coach for terrain-specific pacing on this course.
+        </p>
+      </div>`;
+  }
+
+  return `
+    <div class="card accent">
+      <h3>Race plan — ${race.name}</h3>
+      <p style="font-size:13px; color:var(--lane-dim); font-family:'Helvetica Neue',Arial,sans-serif; margin:0 0 16px;">
+        Target finish <strong style="color:var(--chalk);">${targetLabel}</strong> at an average pace of <strong style="color:var(--gold);">${fmtPace(goalPace)}</strong>. This updates automatically as your fitness and recent runs change — check it here anytime, no need to ask the coach.
+      </p>
+      ${NYC_COURSE_SEGMENTS.map(seg=>{
+        const segPace = goalPace + seg.adjust;
+        return `
+        <div style="margin-bottom:13px; padding-bottom:13px; border-bottom:1px solid var(--hairline);">
+          <div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px;">
+            <span style="font-size:13.5px; font-weight:600;">Mile ${seg.miles} — ${seg.label}</span>
+            <span style="font-family:'Helvetica Neue',Arial,sans-serif; font-weight:700; color:var(--gold); flex-shrink:0;">${fmtPace(segPace)}</span>
+          </div>
+          <div style="font-size:12.5px; color:var(--lane-dim); line-height:1.5; margin-top:4px;">${seg.note}</div>
+        </div>`;
+      }).join('')}
+      <p style="font-size:12.5px; color:var(--lane-dim); font-family:'Helvetica Neue',Arial,sans-serif; line-height:1.6; margin:4px 0 0;">
+        Practice tip: on a couple of long runs before taper, try running the first few miles at your Verrazzano-adjusted pace and a late stretch at your Fifth Avenue pace, so the effort feels rehearsed rather than new on race morning.
+      </p>
+    </div>`;
+}
+
 function weeksToRace(race){
   const today = new Date(); today.setHours(0,0,0,0);
   const raceDate = parseKey((race||getActiveRace()).date);
@@ -911,7 +968,13 @@ function showToast(msg){
 /* ============ ROUTER ============ */
 let currentView = 'today';
 function setView(v){
+  const enteringCoach = (v === 'coach' && currentView !== 'coach');
   currentView = v;
+  if(enteringCoach){
+    // Start each visit with a clean-looking chat — the coach still has full history for context,
+    // it's just not re-displayed every time you open the tab.
+    window._chatSessionStartIndex = state.chat.length;
+  }
   document.querySelectorAll('nav.tabbar button').forEach(b=>{
     b.classList.toggle('active', b.dataset.view === v);
   });
@@ -1422,6 +1485,8 @@ function renderPlan(){
       <button class="ghost block" style="margin-top:14px;" onclick="setView('settings')">Set goal time in Settings</button>
     </div>
 
+    ${renderRacePlanCard()}
+
     <div class="row" style="margin-bottom:16px;">
       <button class="ghost" onclick="shiftPlanWeek(-1)">← Prev week</button>
       <button class="ghost" onclick="shiftPlanWeek(1)">Next week →</button>
@@ -1869,18 +1934,24 @@ function bulkFillShifts(toastMsg){
 /* ============ COACH VIEW ============ */
 function renderCoach(){
   const hasKey = !!state.settings.apiKey;
-  const chatHtml = state.chat.map(m=>`<div class="msg ${m.role==='user'?'user':'coach'}">${escapeHtml(m.content)}</div>`).join('');
+  if(window._chatSessionStartIndex === undefined) window._chatSessionStartIndex = state.chat.length;
+  const visibleChat = state.chat.slice(window._chatSessionStartIndex);
+  const hasPriorHistory = window._chatSessionStartIndex > 0;
+  const chatHtml = visibleChat.map(m=>`<div class="msg ${m.role==='user'?'user':'coach'}">${escapeHtml(m.content)}</div>`).join('');
   const voiceInputSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
   const voiceOutputSupported = 'speechSynthesis' in window;
   return `
     <div class="coach-fullpage" id="coachFullpage">
       <div class="coach-topbar">
         <h1>Coach</h1>
-        ${voiceOutputSupported ? `<button class="ghost" style="padding:6px 12px; font-size:12px;" onclick="toggleVoiceReplies()">${state.settings.voiceReplies?'🔊':'🔇'}</button>` : ''}
+        <div style="display:flex; gap:6px;">
+          ${hasPriorHistory ? `<button class="ghost" style="padding:6px 12px; font-size:12px;" onclick="clearChatHistory()">Forget history</button>` : ''}
+          ${voiceOutputSupported ? `<button class="ghost" style="padding:6px 12px; font-size:12px;" onclick="toggleVoiceReplies()">${state.settings.voiceReplies?'🔊':'🔇'}</button>` : ''}
+        </div>
       </div>
       ${!hasKey ? `<div class="key-warning" style="margin-top:12px;">Add your Anthropic API key in <button class="linklike" onclick="setView('settings')">Settings</button> to chat with your coach.</div>` : ''}
       <div class="chat-log-full" id="chatLog">
-        ${chatHtml || `<div class="empty">Say hello — tell your coach how today's shift went, how you're feeling, or attach a screenshot of a recent run.${voiceInputSupported ? ' Tap the mic to talk instead of typing.' : ''}</div>`}
+        ${chatHtml || `<div class="empty">${hasPriorHistory ? 'Fresh chat — the coach still remembers everything from before, just ask.' : "Say hello — tell your coach how today's shift went, how you're feeling, or attach a screenshot of a recent run."}${voiceInputSupported ? ' Tap the mic to talk instead of typing.' : ''}</div>`}
       </div>
       ${pendingImage ? `<div style="display:flex; align-items:center; gap:10px; padding-bottom:8px; flex-shrink:0;">
         <img src="${pendingImage.dataUrl}" style="height:56px; border-radius:4px; border:1px solid rgba(232,226,212,0.2);">
@@ -1896,6 +1967,14 @@ function renderCoach(){
       <input type="file" id="screenshotInput" accept="image/*" style="display:none" onchange="onScreenshotChosen(event)">
     </div>
   `;
+}
+function clearChatHistory(){
+  if(!confirm("Forget everything from past coach conversations? This can't be undone. (Your training data, logs, and shifts are not affected.)")) return;
+  state.chat = [];
+  window._chatSessionStartIndex = 0;
+  saveState();
+  showToast('Coach memory cleared');
+  render();
 }
 function toggleVoiceReplies(){
   state.settings.voiceReplies = !state.settings.voiceReplies;
