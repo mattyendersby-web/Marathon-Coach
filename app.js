@@ -2049,6 +2049,18 @@ const COACH_TOOLS = [
       },
       required: ["date","badge","description"]
     }
+  },
+  {
+    name: "update_race_goal",
+    description: "Change the athlete's goal finish time for their active race. Use this whenever the athlete asks to target a new time (e.g. 'let's go for sub 4:30', 'change my goal to 4 hours'). This directly updates the app's Race Plan card — the target pace, training paces (easy/tempo/interval/marathon), and the mile-by-mile NYC course pacing breakdown all recalculate automatically from this new goal, so you don't need to compute or restate individual splits yourself; just call this and the app shows the athlete the correct numbers immediately.",
+    input_schema: {
+      type: "object",
+      properties: {
+        goal_hours: { type: "number", description: "Hours component of the goal finish time, e.g. 4 for a 4:30:00 goal." },
+        goal_minutes: { type: "number", description: "Minutes component of the goal finish time (0-59), e.g. 30 for a 4:30:00 goal." }
+      },
+      required: ["goal_hours","goal_minutes"]
+    }
   }
 ];
 
@@ -2062,6 +2074,21 @@ function applyCoachToolCall(name, input){
     saveState();
     showToast(`Plan updated for ${date}`);
     return { ok:true, message: `Updated. The athlete's app now shows on ${date}: "${description}" (${badge}).` };
+  }
+  if(name === 'update_race_goal'){
+    const race = getActiveRace();
+    const gh = Number(input.goal_hours);
+    const gm = Number(input.goal_minutes);
+    if(isNaN(gh) || isNaN(gm)){
+      return { ok:false, message: "Invalid goal time." };
+    }
+    race.goalHours = gh;
+    race.goalMinutes = gm;
+    saveState();
+    showToast(`Race goal updated to ${gh}h ${gm}m`);
+    const paces = trainingPaces(race);
+    const paceSummary = paces ? `easy ${fmtPace(paces.easy)}, marathon ${fmtPace(paces.marathon)}, tempo ${fmtPace(paces.tempo)}, interval ${fmtPace(paces.interval)}` : 'unavailable';
+    return { ok:true, message: `Updated. Goal is now ${gh}h ${gm}m for ${race.name}. The app's Race Plan card (Plan tab) now shows this goal with recalculated paces: ${paceSummary}, and the full NYC mile-by-mile pacing breakdown has updated to match.` };
   }
   return { ok:false, message: `Unknown tool: ${name}` };
 }
@@ -2154,6 +2181,7 @@ HOW TO COACH
 - Give concrete, actionable answers (paces, distances, strength exercises, specific food/hydration suggestions) rather than vague encouragement.
 - If asked whether the goal time is realistic, use the realism check above as your starting point and explain the reasoning, don't just repeat the verdict.
 - PLAN CHANGES: if the athlete tells you they missed, need to move, or want to change a session — decide with them whether to make it up, replace it, or just let it go, then use the update_training_day tool to actually apply the change to a specific date. Don't just talk about changing the plan — call the tool so the app reflects it. You can decide to keep the plan as-is and simply reassure them that's fine too; only call the tool when something should actually change.
+- RACE GOAL CHANGES: if the athlete asks to target a new finish time (e.g. "let's go for sub 4:30", "change my goal to 4 hours"), use the update_race_goal tool to actually set it — don't just describe new splits yourself. The app recalculates the goal pace, training paces, and the full NYC mile-by-mile pacing plan automatically once you call this, and the athlete can see all of it on the Plan tab's Race Plan card any time without needing to ask you again. After calling it, you can still comment on whether the new goal is realistic given their fitness.
 - You are not a substitute for a doctor, physiotherapist, or a licensed therapist. If they describe symptoms of injury, disordered eating, or a mental health crisis, say so plainly and encourage them to see a professional, without being alarmist about normal training fatigue.
 - Keep replies focused — a few short paragraphs or a tight list, not an essay, unless they ask for depth.`;
 }
