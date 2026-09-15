@@ -2066,6 +2066,14 @@ function applyCoachToolCall(name, input){
   return { ok:false, message: `Unknown tool: ${name}` };
 }
 
+/* ============ LIVE LONDON DATE/TIME (for the coach's context) ============ */
+function londonDateTimeString(){
+  const now = new Date();
+  const dateStr = new Intl.DateTimeFormat('en-GB', { timeZone:'Europe/London', weekday:'long', day:'numeric', month:'long', year:'numeric' }).format(now);
+  const timeStr = new Intl.DateTimeFormat('en-GB', { timeZone:'Europe/London', hour:'2-digit', minute:'2-digit', hour12:false }).format(now);
+  return { dateStr, timeStr };
+}
+
 function buildCoachSystemPrompt(){
   const s = state.settings;
   const race = getActiveRace();
@@ -2097,7 +2105,12 @@ function buildCoachSystemPrompt(){
     return `${d.dateKey} (${dowShort(d.date)}${d.dateKey===key?', TODAY':''}): ${SHIFT_LABELS[d.shift]} — ${sess.desc}${sess.strength ? ' + strength' : ''}${isPast ? (doneFlag ? ' [completed]' : ' [not marked done]') : ''}`;
   }).join('\n');
 
-  return `You are an elite marathon coach — the calibre of coach who has guided athletes to Boston-qualifying and sub-elite times — combined with a sports nutritionist, a strength coach for runners, and a supportive performance psychologist, working one-to-one with ${s.name || 'your athlete'}, age ${s.age}, training for the ${race.name} on ${race.date}.
+  const { dateStr, timeStr } = londonDateTimeString();
+  const todayShiftForHeader = getShift(key);
+
+  return `RIGHT NOW: it is ${dateStr}, ${timeStr} (UK time). Today's shift is: ${shiftLabelWithHours(todayShiftForHeader) || 'not set'}. Always reason from this actual current date and time — never ask the athlete what day or time it is, and never assume a different date than this one. If they mention "today", "tomorrow", "this evening" etc, resolve it against this real date/time.
+
+You are an elite marathon coach — the calibre of coach who has guided athletes to Boston-qualifying and sub-elite times — combined with a sports nutritionist, a strength coach for runners, and a supportive performance psychologist, working one-to-one with ${s.name || 'your athlete'}, age ${s.age}, training for the ${race.name} on ${race.date}.
 
 COACHING METHODOLOGY — hold yourself to this standard
 - Ground every recommendation in established endurance training science: progressive periodization (base → build → peak → taper), the roughly 80/20 easy-to-hard training distribution, and individualized pace prescription rather than generic advice.
@@ -2292,10 +2305,11 @@ function renderSettings(){
         <div><label>Max heart rate (bpm)</label><input id="set_maxhr" type="number" value="${s.maxHR ?? ''}"></div>
         <div><label>Resting heart rate (bpm)</label><input id="set_restinghr" type="number" value="${s.restingHR ?? ''}"></div>
       </div>
+      <button class="block" style="margin-bottom:14px;" onclick="saveSettings()">Save</button>
       ${hrZones() ? `<div style="font-size:12px; color:var(--lane-dim); font-family:'Helvetica Neue',Arial,sans-serif; line-height:1.8;">
         Zone 1: ${hrZones().z1.lo}-${hrZones().z1.hi} · Zone 2: ${hrZones().z2.lo}-${hrZones().z2.hi} · Zone 3: ${hrZones().z3.lo}-${hrZones().z3.hi}<br>
         Zone 4: ${hrZones().z4.lo}-${hrZones().z4.hi} · Zone 5: ${hrZones().z5.lo}-${hrZones().z5.hi}
-      </div>` : ''}
+      </div>` : `<p style="font-size:12px; color:var(--lane-dim); font-family:'Helvetica Neue',Arial,sans-serif; margin:0;">Enter both numbers and tap Save to see your zones here.</p>`}
     </div>
 
     <div class="card">
@@ -2445,7 +2459,7 @@ function exportData(){
   const blob = new Blob([JSON.stringify(state, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = `split-coach-backup-${todayKey()}.json`;
+  a.href = url; a.download = `marathon-coach-backup-${todayKey()}.json`;
   a.click();
   URL.revokeObjectURL(url);
   state.lastBackupAt = Date.now();
