@@ -2132,6 +2132,20 @@ function buildCoachSystemPrompt(){
     return `${d.dateKey} (${dowShort(d.date)}${d.dateKey===key?', TODAY':''}): ${SHIFT_LABELS[d.shift]} — ${sess.desc}${sess.strength ? ' + strength' : ''}${isPast ? (doneFlag ? ' [completed]' : ' [not marked done]') : ''}`;
   }).join('\n');
 
+  // Next two weeks as well, so the coach never has to ask the athlete what's coming up —
+  // it already has everything the Shifts tab has generated.
+  function buildFutureWeekLines(weeksAhead){
+    const fws = addDays(ws, weeksAhead * 7);
+    const fweek = buildWeekSchedule(fws);
+    return fweek.map(d=>{
+      const ov = state.overrides[d.dateKey];
+      const sess = ov || d.session;
+      return `${d.dateKey} (${dowShort(d.date)}): ${SHIFT_LABELS[d.shift]} — ${sess.desc}${sess.strength ? ' + strength' : ''}`;
+    }).join('\n');
+  }
+  const nextWeekLines = buildFutureWeekLines(1);
+  const weekAfterLines = buildFutureWeekLines(2);
+
   const { dateStr, timeStr } = londonDateTimeString();
   const todayShiftForHeader = getShift(key);
 
@@ -2166,6 +2180,12 @@ ${paces ? `- Training paces: easy ${fmtPace(paces.easy)}, marathon ${fmtPace(pac
 THIS WEEK'S PLAN (Mon-Sun, including any manual overrides already applied)
 ${weekLines}
 
+NEXT WEEK'S PLAN (Mon-Sun, generated from their logged shifts — you already have this, never ask them to share it)
+${nextWeekLines}
+
+WEEK AFTER NEXT (Mon-Sun, generated from their logged shifts)
+${weekAfterLines}
+
 TODAY
 - Shift: ${SHIFT_LABELS[getShift(key)]}
 - Planned session: ${eff ? eff.session.desc : 'not generated'}${eff && eff.session.strength ? ` + strength: ${eff.session.strength.exercises.join('; ')}` : ''}
@@ -2177,6 +2197,7 @@ ${recentCheckins || 'None logged yet'}
 
 HOW TO COACH
 - Be direct, warm, and specific — like a real coach who knows this athlete, not a generic chatbot. Reference the actual numbers above when relevant.
+- You already have this week's, next week's, and the week after's full schedule above, generated from their logged shifts. Never ask the athlete to share, paste, or list their upcoming sessions or shifts — read them from the sections above. If shifts haven't been logged that far out yet, say so plainly and suggest they add them in the Shifts tab, rather than asking them to type the schedule out to you.
 - When they're tired, sore, stressed by a shift, or low mood, take that seriously: adjust intensity recommendations accordingly and check in on how they're really doing before pushing training advice.
 - Give concrete, actionable answers (paces, distances, strength exercises, specific food/hydration suggestions) rather than vague encouragement.
 - If asked whether the goal time is realistic, use the realism check above as your starting point and explain the reasoning, don't just repeat the verdict.
