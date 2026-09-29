@@ -2038,7 +2038,7 @@ function escapeHtml(s){
 const COACH_TOOLS = [
   {
     name: "update_training_day",
-    description: "Change what's planned for a specific date in the athlete's training app — use this whenever you and the athlete agree on a change to their plan (they missed a session, need a rest day, want to swap a run, are injured, or you're rescheduling around their shift). This directly updates the app so the athlete sees the new plan next time they open it. Always call this rather than just describing the change in words, whenever a real plan change is agreed.",
+    description: "Change what's planned for a specific date, anywhere in the athlete's plan — today, next week, or any week between now and race day. Use this whenever you and the athlete agree on a change (they missed a session, need a rest day, want to swap a run, are injured, feel run down, or you're rescheduling around their shifts or restructuring several days at once — call it once per date). This directly updates the app so the athlete sees the new plan next time they open it. Always call this rather than just describing the change in words, whenever a real plan change is agreed, no matter how far out the date is.",
     input_schema: {
       type: "object",
       properties: {
@@ -2146,6 +2146,44 @@ function buildCoachSystemPrompt(){
   const nextWeekLines = buildFutureWeekLines(1);
   const weekAfterLines = buildFutureWeekLines(2);
 
+  // Full plan overview: every week from now until race week, so the coach can see
+  // the entire arc of training at once and never needs a screenshot or a description
+  // of "what's on this day" — it already has the whole plan, start to finish.
+  function buildFullPlanOverview(){
+    const totalWeeks = Math.max(0, weeksToRace(race));
+    const lines = [];
+    for(let w = 0; w <= totalWeeks; w++){
+      const fws = addDays(ws, w * 7);
+      if(fws > parseKey(race.date) && w > 0) break;
+      const fweek = buildWeekSchedule(fws);
+      const tmplPhase = fweek.find(d=>d.session && d.session.phase) ? null : null;
+      let totalPlanned = 0, completed = 0, longMiles = 0, qualityDesc = '', hasRace = false;
+      fweek.forEach(d=>{
+        const ov = state.overrides[d.dateKey];
+        const sess = ov || d.session;
+        const miles = sessionTotalMiles(sess);
+        totalPlanned += miles;
+        const log = state.log[d.dateKey];
+        if(log && log.done){
+          const actual = (log.source === 'photo' && log.actualMiles != null) ? log.actualMiles : miles;
+          completed += actual;
+        }
+        if(sess.badge === 'long') longMiles = miles;
+        if(sess.type === 'quality' || sess.badge === 'quality') qualityDesc = sess.desc;
+        if(sess.type === 'race') hasRace = true;
+      });
+      const weekStartLabel = fmtDate(fws);
+      const weeksOutLabel = w === 0 ? 'this week' : `${w} week${w===1?'':'s'} out`;
+      if(hasRace){
+        lines.push(`${weekStartLabel} (RACE WEEK — ${weeksOutLabel}): taper, race day ${race.date} — goal ${goalTotalMinutes(race) ? fmtMinutesAsHM(goalTotalMinutes(race)) : 'not set'}`);
+      } else {
+        lines.push(`${weekStartLabel} (${weeksOutLabel}): planned ~${formatDistance(totalPlanned)}${completed ? `, ${formatDistance(completed)} completed so far` : ''} — long run ${formatDistance(longMiles)}${qualityDesc ? `, quality: ${qualityDesc}` : ''}`);
+      }
+    }
+    return lines.join('\n');
+  }
+  const fullPlanOverview = buildFullPlanOverview();
+
   const { dateStr, timeStr } = londonDateTimeString();
   const todayShiftForHeader = getShift(key);
 
@@ -2186,6 +2224,9 @@ ${nextWeekLines}
 WEEK AFTER NEXT (Mon-Sun, generated from their logged shifts)
 ${weekAfterLines}
 
+FULL PLAN — EVERY WEEK FROM NOW TO RACE DAY (this is the entire training arc, start to finish; you already have all of it)
+${fullPlanOverview}
+
 TODAY
 - Shift: ${SHIFT_LABELS[getShift(key)]}
 - Planned session: ${eff ? eff.session.desc : 'not generated'}${eff && eff.session.strength ? ` + strength: ${eff.session.strength.exercises.join('; ')}` : ''}
@@ -2197,11 +2238,12 @@ ${recentCheckins || 'None logged yet'}
 
 HOW TO COACH
 - Be direct, warm, and specific — like a real coach who knows this athlete, not a generic chatbot. Reference the actual numbers above when relevant.
-- You already have this week's, next week's, and the week after's full schedule above, generated from their logged shifts. Never ask the athlete to share, paste, or list their upcoming sessions or shifts — read them from the sections above. If shifts haven't been logged that far out yet, say so plainly and suggest they add them in the Shifts tab, rather than asking them to type the schedule out to you.
+- You already have the ENTIRE plan above — this week and next week day-by-day, plus every single week from now through race week as a summary (mileage, long run, quality session). You can see the whole arc of training at once, start to finish. Never say you can't see the plan, never ask the athlete to screenshot or describe what's on a given day, and never ask them to share their schedule — it's already above. If shifts haven't been logged that far out yet for a given week, say so plainly and suggest they add them in the Shifts tab, rather than asking the athlete to type the schedule out to you.
+- You also already have everything they've logged: heart rate zones, check-ins (mood/energy/soreness), fuel targets, and recent history — all in the sections below. Treat this as your live view into the app, not a static snapshot you're missing pieces of.
 - When they're tired, sore, stressed by a shift, or low mood, take that seriously: adjust intensity recommendations accordingly and check in on how they're really doing before pushing training advice.
 - Give concrete, actionable answers (paces, distances, strength exercises, specific food/hydration suggestions) rather than vague encouragement.
 - If asked whether the goal time is realistic, use the realism check above as your starting point and explain the reasoning, don't just repeat the verdict.
-- PLAN CHANGES: if the athlete tells you they missed, need to move, or want to change a session — decide with them whether to make it up, replace it, or just let it go, then use the update_training_day tool to actually apply the change to a specific date. Don't just talk about changing the plan — call the tool so the app reflects it. You can decide to keep the plan as-is and simply reassure them that's fine too; only call the tool when something should actually change.
+- PLAN CHANGES: if the athlete tells you they missed, need to move, or want to change a session — anywhere in the plan, not just this week — decide with them whether to make it up, replace it, or just let it go, then use the update_training_day tool to actually apply the change to that specific date. If several days need restructuring (e.g. a bad week, an injury needing a lighter fortnight, or shifts changing several weeks out), call it once per date to update each one. Don't just talk about changing the plan — call the tool so the app reflects it. You can decide to keep the plan as-is and simply reassure them that's fine too; only call the tool when something should actually change.
 - RACE GOAL CHANGES: if the athlete asks to target a new finish time (e.g. "let's go for sub 4:30", "change my goal to 4 hours"), use the update_race_goal tool to actually set it — don't just describe new splits yourself. The app recalculates the goal pace, training paces, and the full NYC mile-by-mile pacing plan automatically once you call this, and the athlete can see all of it on the Plan tab's Race Plan card any time without needing to ask you again. After calling it, you can still comment on whether the new goal is realistic given their fitness.
 - You are not a substitute for a doctor, physiotherapist, or a licensed therapist. If they describe symptoms of injury, disordered eating, or a mental health crisis, say so plainly and encourage them to see a professional, without being alarmist about normal training fatigue.
 - Keep replies focused — a few short paragraphs or a tight list, not an essay, unless they ask for depth.`;
