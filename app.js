@@ -14,6 +14,12 @@ function defaultState(){
       raceDate: '2026-11-01',
       longestRunMiles: 16,
       easyPaceMinPerMile: 10.5,
+      vo2max: 45,
+      marathonsCompleted: 3,
+      marathonPbTime: '4:17',
+      marathonPbYear: 2024,
+      mostRecentMarathonYear: 2025,
+      marathonHistoryNote: 'First marathon 2022, PB 4:17 in 2024, most recent in 2025. Running consistently every week since June/July 2026 building toward NYC.',
       distanceUnit: 'mi', // 'mi' or 'km'
       maxHR: null, restingHR: null,
       voiceReplies: true,
@@ -2210,9 +2216,17 @@ ${zoneLines}
 - ${weeksOut} weeks until race day
 ${otherRaces ? `- Other races on file: ${otherRaces}` : ''}
 
+RUNNING HISTORY — real race history, weight this heavily alongside the current plan
+${s.marathonsCompleted ? `- Marathons completed: ${s.marathonsCompleted}` : ''}
+${s.marathonPbTime ? `- Marathon PB: ${s.marathonPbTime}${s.marathonPbYear ? ` (${s.marathonPbYear})` : ''}` : ''}
+${s.mostRecentMarathonYear ? `- Most recent marathon: ${s.mostRecentMarathonYear}` : ''}
+${s.vo2max ? `- VO2 max: ${s.vo2max}` : ''}
+${s.marathonHistoryNote ? `- Athlete's own notes: ${s.marathonHistoryNote}` : ''}
+
 GOAL & REALISM
 - Goal time: ${goalTotalMinutes(race) ? fmtMinutesAsHM(goalTotalMinutes(race)) : 'not set'}
-- Realism check: ${realism.text}
+- Realism check (from recent time-trial data via Riegel): ${realism.text}
+- Cross-check this against their marathon PB above where one exists — a PB from a different training cycle isn't current fitness, but it's real evidence of what they're capable of on the day, so use it to sanity-check the Riegel estimate rather than relying on either alone.
 ${paces ? `- Training paces: easy ${fmtPace(paces.easy)}, marathon ${fmtPace(paces.marathon)}, tempo ${fmtPace(paces.tempo)}, interval ${fmtPace(paces.interval)}` : ''}
 
 THIS WEEK'S PLAN (Mon-Sun, including any manual overrides already applied)
@@ -2411,6 +2425,25 @@ function renderSettings(){
       <input id="set_cross" value="${s.crossTrainDefault}">
     </div>
 
+    <div class="card">
+      <h3>Running history</h3>
+      <p style="font-size:13px; color:var(--lane-dim); font-family:'Helvetica Neue',Arial,sans-serif; margin: 0 0 12px;">
+        Your real race history and fitness markers — the coach uses this alongside your current training to judge what's realistic, not just a single recent time trial.
+      </p>
+      <div class="row">
+        <div><label>Marathons completed</label><input id="set_marathonsCompleted" type="number" value="${s.marathonsCompleted ?? ''}"></div>
+        <div><label>VO2 max (if known)</label><input id="set_vo2max" type="number" value="${s.vo2max ?? ''}"></div>
+      </div>
+      <div class="row">
+        <div><label>Marathon PB time (h:mm)</label><input id="set_marathonPbTime" value="${s.marathonPbTime ?? ''}" placeholder="4:17"></div>
+        <div><label>PB year</label><input id="set_marathonPbYear" type="number" value="${s.marathonPbYear ?? ''}"></div>
+      </div>
+      <label>Most recent marathon — year</label>
+      <input id="set_mostRecentMarathonYear" type="number" value="${s.mostRecentMarathonYear ?? ''}">
+      <label>Notes for the coach (freeform — any history, strategies or context you want it to know)</label>
+      <textarea id="set_marathonHistoryNote" rows="3" placeholder="e.g. First marathon 2022, PB 4:17 in 2024, blew up after mile 20 last time and want to avoid that this time...">${s.marathonHistoryNote ?? ''}</textarea>
+    </div>
+
     ${renderRacesCard()}
 
     <div class="card">
@@ -2542,6 +2575,18 @@ function saveSettings(){
   s.longestRunMiles = Number(document.getElementById('set_longest').value)||s.longestRunMiles;
   s.crossTrainDefault = document.getElementById('set_cross').value;
   s.apiKey = document.getElementById('set_apikey').value.trim();
+  const mc = document.getElementById('set_marathonsCompleted');
+  if(mc) s.marathonsCompleted = mc.value === '' ? null : Number(mc.value);
+  const vo2 = document.getElementById('set_vo2max');
+  if(vo2) s.vo2max = vo2.value === '' ? null : Number(vo2.value);
+  const pbt = document.getElementById('set_marathonPbTime');
+  if(pbt) s.marathonPbTime = pbt.value.trim();
+  const pby = document.getElementById('set_marathonPbYear');
+  if(pby) s.marathonPbYear = pby.value === '' ? null : Number(pby.value);
+  const mry = document.getElementById('set_mostRecentMarathonYear');
+  if(mry) s.mostRecentMarathonYear = mry.value === '' ? null : Number(mry.value);
+  const mhn = document.getElementById('set_marathonHistoryNote');
+  if(mhn) s.marathonHistoryNote = mhn.value.trim();
   saveState();
   showToast('Settings saved');
   render();
